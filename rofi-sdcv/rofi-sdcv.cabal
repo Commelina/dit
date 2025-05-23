@@ -1,0 +1,25 @@
+cabal-version:   3.4
+name:            rofi-sdcv
+version:         0.1.0.0
+license:         BSD-3-Clause
+license-file:    LICENSE
+author:          Commelina
+maintainer:      maosics@gmail.com
+build-type:      Simple
+extra-doc-files: CHANGELOG.md
+
+executable rofi-sdcv
+  main-is:          Main.hs
+  build-depends:
+    , aeson
+    , base        >=4.16
+    , bytestring
+    , html-parse
+    , linebreak
+    , pango
+    , process
+    , text
+
+  hs-source-dirs:   app
+  default-language: GHC2021
+  ghc-options:      -Wall -threaded

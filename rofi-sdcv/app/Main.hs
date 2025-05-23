@@ -8,6 +8,7 @@ build-depends:
     , linebreak
     , pango
     , process
+    , split
     , text
 -}
 
@@ -25,6 +26,7 @@ import           Data.Aeson               (FromJSON (..), ToJSON (..),
                                            genericParseJSON, genericToJSON)
 import qualified Data.Aeson               as Aeson
 import qualified Data.List                as L
+import qualified Data.List.Split          as L
 import           Data.Maybe               (fromMaybe)
 import           Data.Text                (Text)
 import qualified Data.Text                as T
@@ -99,14 +101,20 @@ renderHtml tokens = case HTML.tokensToForest tokens of
     isTextToken (HTML.ContentText _) = True
     isTextToken _                    = False
 
-lookupWordFromSdcv :: String -> IO [SdcvResult]
-lookupWordFromSdcv s = do
-  (exitCode, out, _err) <- readProcessWithExitCode "sdcv" ["-0", "-n", "-j", s] ""
+lookupWordFromSdcv :: Maybe String -> String -> IO [SdcvResult]
+lookupWordFromSdcv dict_m s = do
+  let dictArgs = case dict_m of
+        Nothing   -> []
+        Just dict -> ["-u", dict]
+  (exitCode, out, _err) <- readProcessWithExitCode "sdcv" (["-0", "-n", "-j"] <> dictArgs <> [s]) ""
   case exitCode of
     ExitFailure _ -> exitSuccess
     ExitSuccess   -> case Aeson.eitherDecode' (TL.encodeUtf8 $ TL.pack out) of
       Right (x :: [SdcvResult]) -> return x
       Left _err                 -> return []
+
+dictWordSeparator :: String
+dictWordSeparator = " :: "
 
 renderSdcvResults :: [SdcvResult] -> String
 renderSdcvResults xs =
@@ -125,7 +133,8 @@ renderSdcvResults xs =
     renderSdcvResult :: SdcvResult -> String
     renderSdcvResult SdcvResult{..} =
       let titleString = Pango.markSpan titleAttrs (T.unpack sdcvResultDict)
-                      <> ": " <> T.unpack sdcvResultWord
+                     <> dictWordSeparator
+                     <> T.unpack sdcvResultWord
           defString   = LineBreak.breakString lineBreakFormat (renderPotentialHtml sdcvResultDefinition)
        in titleString <> ['\n'] <> defString
       where
@@ -149,7 +158,7 @@ main = lookupEnv "ROFI_RETV" >>= \case
                        , "-modi", "custom:" <> myPath
                        , "-async"
                        , "-dpi", "144"
-                       , "-theme-str", "window {width: 122ch;} listview {lines: 25; scrollbar-width: 2ch;}"
+                       , "-theme-str", "window {width: 122ch;} listview {lines: 30; scrollbar-width: 2ch;}"
                        ]
   Just "0" -> do
     let rofiModeOptionsString = renderRofiModeOptions initRofiModeOptions
@@ -174,6 +183,11 @@ main = lookupEnv "ROFI_RETV" >>= \case
     performLookup :: IO ()
     performLookup = do
       args <- getArgs
-      let word = args !! 0
-      sdcvResults <- lookupWordFromSdcv word
+      (dict_m, word) <- do
+        (_, _, arg1WithoutMarkup) <- Pango.parseMarkup (args !! 0) '\0' -- FIXME: handle GError
+        -- Note: restrict results to certain dict
+        case L.splitOn dictWordSeparator arg1WithoutMarkup of
+          d:w:_ -> pure (Just d, w)
+          _     -> pure (Nothing, arg1WithoutMarkup)
+      sdcvResults <- lookupWordFromSdcv dict_m word
       putStr $ renderSdcvResults sdcvResults

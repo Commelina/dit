@@ -18,6 +18,7 @@ executable rofi-sdcv
     , linebreak
     , pango
     , process
+    , split
     , text
 
   hs-source-dirs:   app

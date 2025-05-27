@@ -1,9 +1,13 @@
 #!/usr/bin/env cabal
+-- Note: cabal script does not support `project: packages`, see #8024.
+--       Find and run the compiled binary instead.
 {- cabal:
 build-depends:
     , aeson
+    , aki
     , base        >=4.16
     , bytestring
+    , glib
     , html-parse
     , linebreak
     , pango
@@ -21,7 +25,7 @@ build-depends:
 
 module Main where
 
-import           Control.Exception        (SomeException, catch)
+import           Control.Exception        (SomeException, catch, try)
 import           Data.Aeson               (FromJSON (..), ToJSON (..),
                                            genericParseJSON, genericToJSON)
 import qualified Data.Aeson               as Aeson
@@ -37,13 +41,19 @@ import qualified Graphics.Rendering.Pango as Pango
 import           System.Environment       (getArgs, getExecutablePath,
                                            lookupEnv)
 import           System.Exit              (ExitCode (..), exitSuccess)
+import qualified System.Glib.GError       as G
 import           System.IO                (readFile')
 import           System.Process           (callProcess, readProcessWithExitCode)
 import qualified Text.HTML.Parser         as HTML
 import qualified Text.HTML.Tree           as HTML
 import qualified Text.LineBreak           as LineBreak
 
+import qualified Aki                      as Aki
+
+--------------------------------------------------------------------------------
 -- rofi script
+--------------------------------------------------------------------------------
+
 data RofiModeOption
   = RofiModeOptionPrompt           !String
   | RofiModeOptionMessage          !String
@@ -61,7 +71,10 @@ renderRofiModeOptions xs = L.concat (L.map render xs)
     render (RofiModeOptionEnableMarkupRows b) = ['\0'] <> "markup-rows" <> ['\x1f'] <> (if b then "true" else "false") <> ['\n']
     render (RofiModeOptionData             v) = ['\0'] <> "data"        <> ['\x1f'] <> v                               <> ['\n']
 
+--------------------------------------------------------------------------------
 -- sdcv
+--------------------------------------------------------------------------------
+
 data SdcvResult = SdcvResult
   { sdcvResultDict       :: !Text
   , sdcvResultWord       :: !Text
@@ -72,7 +85,7 @@ data SdcvResult = SdcvResult
 standardAesonGenericOptions :: [(String, String)] -> Aeson.Options
 standardAesonGenericOptions fieldLabels =
   Aeson.defaultOptions
-  { Aeson.omitNothingFields  = True -- ^ Omit 'Nothing' fields rather than converting them to 'null'.
+  { Aeson.omitNothingFields  = True
   , Aeson.fieldLabelModifier = \field ->
       fromMaybe ("JSON field missing: " <> show field) (L.lookup field fieldLabels)
   }
@@ -89,18 +102,6 @@ instance FromJSON SdcvResult where
 instance ToJSON SdcvResult where
   toJSON = genericToJSON sdcvResultAesonOptions
 
--- TODO: Handle tags like <br> and <ol>. Ref: tool `html2text`
-renderHtml :: [HTML.Token] -> String
-renderHtml tokens = case HTML.tokensToForest tokens of
-  Left err     -> "<error> " <> show err
-  Right _forest ->
-    let textTokens = L.filter isTextToken tokens
-     in TL.unpack (HTML.renderTokens $ L.intersperse (HTML.ContentText "\n") textTokens)
-  where
-    isTextToken :: HTML.Token -> Bool
-    isTextToken (HTML.ContentText _) = True
-    isTextToken _                    = False
-
 lookupWordFromSdcv :: Maybe String -> String -> IO [SdcvResult]
 lookupWordFromSdcv dict_m s = do
   let dictArgs = case dict_m of
@@ -113,11 +114,27 @@ lookupWordFromSdcv dict_m s = do
       Right (x :: [SdcvResult]) -> return x
       Left _err                 -> return []
 
+--------------------------------------------------------------------------------
+-- rendering
+--------------------------------------------------------------------------------
+
 dictWordSeparator :: String
 dictWordSeparator = " :: "
 
-renderSdcvResults :: [SdcvResult] -> String
-renderSdcvResults xs =
+-- TODO: Handle tags like <br> and <ol>. Ref: tool `html2text`
+renderHtml :: [HTML.Token] -> String
+renderHtml tokens = case HTML.tokensToForest tokens of
+  Left err      -> "<error> " <> show err
+  Right _forest ->
+    let textTokens = L.filter isTextToken tokens
+     in TL.unpack (HTML.renderTokens $ L.intersperse (HTML.ContentText "\n") textTokens)
+  where
+    isTextToken :: HTML.Token -> Bool
+    isTextToken (HTML.ContentText _) = True
+    isTextToken _                    = False
+
+renderToRofi :: [SdcvResult] -> String
+renderToRofi xs =
   let rofiModeOptionsString = renderRofiModeOptions rofiModeOptions
    in rofiModeOptionsString <>
       L.intercalate "\n" (renderSdcvResult <$> xs)
@@ -149,12 +166,48 @@ renderSdcvResults xs =
                           , bfHyphenator   = Just LineBreak.english_US
                           }
 
+renderToAnki :: Text -> [SdcvResult] -> (Text, Text)
+renderToAnki word xs =
+  let front = withWordStyle word
+      back  = T.intercalate newline (renderDef <$> xs)
+   in (front, back)
+  where
+    newline :: Text
+    newline = "<br>"
+
+    withWordStyle, withDefStyle :: Text -> Text
+    withWordStyle s = "<div style=\"text-align: center; font-size: 200%\">" <> s <> "</div>"
+    withDefStyle  s = "<div style=\"text-align: left;\">"                   <> s <> "</div>"
+
+    renderDef :: SdcvResult -> Text
+    renderDef SdcvResult{..} =
+      sdcvResultDict <> (T.pack dictWordSeparator)  <> sdcvResultWord <>
+      newline                                                         <>
+      withDefStyle (T.replace "\n" newline sdcvResultDefinition)
+
+-- <titleLine> -> Either <err> (<dict_m>, <word>)
+-- Note: For restricting results to certain dict.
+--       It returns `(Nothing, word)` for the first lookup,
+--       and `(Just dict, word)` when selecting a dict from the results.
+parseRofiTitle :: String -> IO (Either String (Maybe String, String))
+parseRofiTitle s = do
+  try (Pango.parseMarkup s '\0') >>= \case
+    Left  (e :: G.GError)           -> pure (Left $ "Error parsing markup: " <> show e)
+    Right (_, _, arg1WithoutMarkup) -> do
+      case L.splitOn dictWordSeparator arg1WithoutMarkup of
+        d:w:_ -> pure . Right $ (Just d, w)
+        _     -> pure . Right $ (Nothing, arg1WithoutMarkup)
+
+--------------------------------------------------------------------------------
+-- main
+--------------------------------------------------------------------------------
+
 -- TODO: Configurable GUI attrs
 main :: IO ()
 main = lookupEnv "ROFI_RETV" >>= \case
   Nothing  -> do
     myPath <- getExecutablePath
-    callProcess "rofi" ["-show", "custom"
+    callProcess "rofi" [ "-show", "custom"
                        , "-modi", "custom:" <> myPath
                        , "-async"
                        , "-dpi", "144"
@@ -183,11 +236,15 @@ main = lookupEnv "ROFI_RETV" >>= \case
     performLookup :: IO ()
     performLookup = do
       args <- getArgs
-      (dict_m, word) <- do
-        (_, _, arg1WithoutMarkup) <- Pango.parseMarkup (args !! 0) '\0' -- FIXME: handle GError
-        -- Note: restrict results to certain dict
-        case L.splitOn dictWordSeparator arg1WithoutMarkup of
-          d:w:_ -> pure (Just d, w)
-          _     -> pure (Nothing, arg1WithoutMarkup)
-      sdcvResults <- lookupWordFromSdcv dict_m word
-      putStr $ renderSdcvResults sdcvResults
+      parseRofiTitle (args !! 0) >>= \case
+        Left _               -> exitSuccess
+        Right (dict_m, word) -> do
+          sdcvResults <- lookupWordFromSdcv dict_m word
+          -- Note: add to Anki only when a dictionary is selected
+          case dict_m of
+            Nothing    -> pure ()
+            Just _dict -> uncurry Aki.addBasicNote (renderToAnki (T.pack word) sdcvResults) >>= \case
+              Left err -> putStrLn $ "[Anki] "                      <> err
+              Right _  -> putStrLn $ "[Anki] Added note for word: " <> word
+          -- Note: always render to rofi
+          putStr $ renderToRofi sdcvResults

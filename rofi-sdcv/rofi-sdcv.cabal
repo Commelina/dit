@@ -12,8 +12,10 @@ executable rofi-sdcv
   main-is:          Main.hs
   build-depends:
     , aeson
+    , aki
     , base        >=4.16
     , bytestring
+    , glib
     , html-parse
     , linebreak
     , pango

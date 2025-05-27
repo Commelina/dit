@@ -1,0 +1,32 @@
+cabal-version:   3.4
+name:            aki
+version:         0.1.0.0
+license:         BSD-3-Clause
+license-file:    LICENSE
+author:          Commelina
+maintainer:      maosics@gmail.com
+build-type:      Simple
+extra-doc-files: CHANGELOG.md
+
+library
+  exposed-modules:  Aki
+  build-depends:
+    , aeson
+    , base   >=4.16
+    , req
+    , text
+
+  hs-source-dirs:   src
+  default-language: GHC2021
+  ghc-options:      -Wall
+
+test-suite aki-test
+  default-language: GHC2021
+  type:             exitcode-stdio-1.0
+  hs-source-dirs:   test
+  main-is:          Main.hs
+  build-depends:
+    , aki
+    , base  >=4.16
+
+  ghc-options:      -Wall

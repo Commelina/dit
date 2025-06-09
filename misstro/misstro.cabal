@@ -1,0 +1,48 @@
+cabal-version:   3.4
+name:            misstro
+version:         0.1.0.0
+license:         BSD-3-Clause
+license-file:    LICENSE
+author:          Commelina
+maintainer:      maosics@gmail.com
+build-type:      Simple
+extra-doc-files: CHANGELOG.md
+
+common warnings
+  ghc-options: -Wall
+
+library
+  import:           warnings
+  exposed-modules:  Misstro
+  other-modules:    Misstro.Blocklist
+  build-depends:
+    , base     >=4.16
+    , process
+    , safe
+    , split
+
+  hs-source-dirs:   src
+  default-language: GHC2021
+
+executable misstro
+  import:           warnings
+  main-is:          Main.hs
+  build-depends:
+    , base     >=4.16
+    , misstro
+
+  hs-source-dirs:   app
+  default-language: GHC2021
+
+test-suite misstro-test
+  import:           warnings
+  default-language: GHC2021
+
+  -- other-modules:
+  -- other-extensions:
+  type:             exitcode-stdio-1.0
+  hs-source-dirs:   test
+  main-is:          Main.hs
+  build-depends:
+    , base     >=4.16
+    , misstro
